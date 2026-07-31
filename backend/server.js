@@ -296,15 +296,16 @@ wss.on('connection', (ws) => {
                 const text = (msg.text || '').trim();
                 if (!text || text.length > 2000) return;
 
+                const senderRole = room.host === ws ? 'host' : 'client';
                 const senderName = room.host === ws ? room.hostName : room.clientName;
                 const timestamp = new Date().toISOString();
                 const msgId = 'm_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
                 const replyTo = msg.replyTo || null;
 
-                room.messages.push({ msgId, type: 'text', text, senderName, timestamp, replyTo, edited: false });
+                room.messages.push({ msgId, type: 'text', text, senderRole, senderName, timestamp, replyTo, edited: false });
 
-                if (peer) sendJSON(peer, { type: 'chat-message', text, senderName, timestamp, msgId, replyTo });
-                sendJSON(ws, { type: 'message-sent', text, timestamp, msgId, replyTo });
+                if (peer) sendJSON(peer, { type: 'chat-message', text, senderRole, senderName, timestamp, msgId, replyTo });
+                sendJSON(ws, { type: 'message-sent', text, senderRole, timestamp, msgId, replyTo });
                 break;
             }
 
@@ -364,14 +365,15 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
+                const senderRole = room.host === ws ? 'host' : 'client';
                 const senderName = room.host === ws ? room.hostName : room.clientName;
                 const timestamp = new Date().toISOString();
                 const msgId = 'm_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
 
-                room.messages.push({ msgId, type: 'media', data: mediaData, mediaType, fileName, senderName, timestamp });
+                room.messages.push({ msgId, type: 'media', data: mediaData, mediaType, fileName, senderRole, senderName, timestamp });
 
-                if (peer) sendJSON(peer, { type: 'media-message', data: mediaData, mediaType, fileName, senderName, timestamp, msgId });
-                sendJSON(ws, { type: 'media-sent', data: mediaData, mediaType, fileName, timestamp, msgId });
+                if (peer) sendJSON(peer, { type: 'media-message', data: mediaData, mediaType, fileName, senderRole, senderName, timestamp, msgId });
+                sendJSON(ws, { type: 'media-sent', data: mediaData, mediaType, fileName, senderRole, timestamp, msgId });
                 break;
             }
 

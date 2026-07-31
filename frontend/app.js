@@ -227,13 +227,19 @@ function handleServerMessage(msg) {
             showChatScreen(msg.peerName); setStatus('connected', `Connected to ${msg.peerName}`);
             addSystemMsg(`${msg.peerName} joined the chat`); break;
 
-        case 'chat-message':
-            addChatMessage(msg.text, 'received', msg.timestamp, msg.msgId, msg.replyTo, msg.senderName); break;
+        case 'chat-message': {
+            const isMine = msg.senderRole ? (msg.senderRole === State.role) : (msg.senderName === State.myName);
+            addChatMessage(msg.text, isMine ? 'sent' : 'received', msg.timestamp, msg.msgId, msg.replyTo, msg.senderName);
+            break;
+        }
         case 'message-sent':
             addChatMessage(msg.text, 'sent', msg.timestamp, msg.msgId, msg.replyTo, State.myName); break;
 
-        case 'media-message':
-            addMediaMessage(msg.data, msg.mediaType, msg.fileName, 'received', msg.timestamp, msg.msgId, msg.senderName); break;
+        case 'media-message': {
+            const isMine = msg.senderRole ? (msg.senderRole === State.role) : (msg.senderName === State.myName);
+            addMediaMessage(msg.data, msg.mediaType, msg.fileName, isMine ? 'sent' : 'received', msg.timestamp, msg.msgId, msg.senderName);
+            break;
+        }
         case 'media-sent':
             addMediaMessage(msg.data, msg.mediaType, msg.fileName, 'sent', msg.timestamp, msg.msgId, State.myName); break;
 
@@ -464,10 +470,12 @@ function loadHistory(messages) {
     DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Dual-Key room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
     State.chatHistory = [];
     messages.forEach(m => {
+        const isMine = m.senderRole ? (m.senderRole === State.role) : (m.senderName === State.myName);
+        const side = isMine ? 'sent' : 'received';
         if (m.type === 'text') {
-            addChatMessage(m.text, m.senderName === State.myName ? 'sent' : 'received', m.timestamp, m.msgId, m.replyTo, m.senderName);
+            addChatMessage(m.text, side, m.timestamp, m.msgId, m.replyTo, m.senderName);
         } else if (m.type === 'media') {
-            addMediaMessage(m.data, m.mediaType, m.fileName, m.senderName === State.myName ? 'sent' : 'received', m.timestamp, m.msgId, m.senderName);
+            addMediaMessage(m.data, m.mediaType, m.fileName, side, m.timestamp, m.msgId, m.senderName);
         }
     });
 }
