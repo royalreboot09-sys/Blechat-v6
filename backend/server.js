@@ -1,10 +1,10 @@
 /**
- * Realtime Chat V4 — WebSocket Server
+ * Realtime Chat V5 — WebSocket Server
  * 
  * Features:
  * - Permanent rooms with unique room-username + 6-digit PIN password
- * - Host creates room with a username & password; guest joins by entering both
- * - Max 2 members per room (locked once guest identity assigned, online or offline)
+ * - "Create Room" ONLY creates new rooms; errors if room username is already taken
+ * - "Join Room" enters any room with username + password (max 2 active members at a time)
  * - Daily midnight chat reset at 11:59 PM
  * - Real-time Message Edit & Delete
  * - Media sharing, WhatsApp-style replies, Chat download consent, RAR Library reader
@@ -58,13 +58,12 @@ const wss = new WebSocketServer({
 /**
  * Permanent Rooms Map:
  * rooms = Map<roomUsername, {
- *     roomUsername: string,        // unique room identifier chosen by host
- *     password: string,           // 6-digit PIN
- *     host: WebSocket | null,     // host's live socket
- *     client: WebSocket | null,   // guest's live socket
- *     hostName: string,           // host's display name
- *     clientName: string,         // guest's display name (locked once set)
- *     clientLocked: boolean,      // true once a guest has joined (even if offline, slot is taken)
+ *     roomUsername: string,
+ *     password: string,
+ *     host: WebSocket | null,
+ *     client: WebSocket | null,
+ *     hostName: string,
+ *     clientName: string,
  *     messages: Array,
  *     lastResetDate: string
  * }>
@@ -156,28 +155,9 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
+                // If room username already exists, error out (Do NOT redirect to existing room!)
                 if (rooms.has(roomUsername)) {
-                    const existing = rooms.get(roomUsername);
-                    // Allow host to reclaim their room if disconnected
-                    if (!existing.host && existing.password === password) {
-                        existing.host = ws;
-                        existing.hostName = displayName;
-                        ws._roomUsername = roomUsername;
-                        ws._role = 'host';
-                        sendJSON(ws, {
-                            type: 'room-created',
-                            roomUsername,
-                            name: displayName,
-                            history: existing.messages
-                        });
-                        if (existing.client) {
-                            sendJSON(existing.client, { type: 'peer-joined', peerName: displayName });
-                            sendJSON(ws, { type: 'peer-joined', peerName: existing.clientName });
-                        }
-                        console.log(`[ROOM] Host reclaimed room @${roomUsername}`);
-                        return;
-                    }
-                    sendJSON(ws, { type: 'error', message: `Room username "@${roomUsername}" is already taken. Choose a different one.` });
+                    sendJSON(ws, { type: 'error', message: `Room username "@${roomUsername}" is already taken! Please choose a different unique username or use "Join Room" to enter.` });
                     return;
                 }
 
@@ -188,7 +168,6 @@ wss.on('connection', (ws) => {
                     client: null,
                     hostName: displayName,
                     clientName: '',
-                    clientLocked: false,
                     messages: [],
                     lastResetDate: getTodayString()
                 });
@@ -201,11 +180,11 @@ wss.on('connection', (ws) => {
                 break;
             }
 
-            // ===== Join Permanent Room =====
+            // ===== Join Room =====
             case 'join-room': {
                 const roomUsername = sanitize(msg.roomUsername || '').toLowerCase();
                 const password = (msg.password || '').trim();
-                const displayName = sanitize(msg.name) || 'Guest';
+                const displayName = sanitize(msg.name) || 'User';
 
                 if (!roomUsername) {
                     sendJSON(ws, { type: 'error', message: 'Enter the room username.' });
@@ -213,7 +192,7 @@ wss.on('connection', (ws) => {
                 }
 
                 if (!rooms.has(roomUsername)) {
-                    sendJSON(ws, { type: 'error', message: `Room "@${roomUsername}" not found.` });
+                    sendJSON(ws, { type: 'error', message: `Room "@${roomUsername}" does not exist. Please check the username or create a new room.` });
                     return;
                 }
 
@@ -221,42 +200,61 @@ wss.on('connection', (ws) => {
 
                 // Verify password
                 if (room.password !== password) {
-                    sendJSON(ws, { type: 'error', message: 'Wrong password. Ask the host for the correct 6-digit PIN.' });
+                    sendJSON(ws, { type: 'error', message: 'Incorrect 6-digit password for room @' + roomUsername });
                     return;
                 }
 
-                // If room already has a locked client, only allow that same person back
-                if (room.clientLocked && room.clientName && room.clientName !== displayName) {
-                    sendJSON(ws, { type: 'error', message: `Room is full. Only "${room.clientName}" can rejoin as guest.` });
-                    return;
-                }
+                // Check active connected sockets count (Max 2 allowed at a time)
+                const hostActive = room.host && room.host.readyState === 1;
+                const clientActive = room.client && room.client.readyState === 1;
 
-                // If client socket is already alive, reject
-                if (room.client && room.client.readyState === 1) {
-                    sendJSON(ws, { type: 'error', message: 'Room is full (2 active users max).' });
+                if (hostActive && clientActive) {
+                    sendJSON(ws, { type: 'error', message: `Room "@${roomUsername}" is full! Maximum 2 members allowed at a time.` });
                     return;
                 }
 
                 cleanupSocket(ws);
-                room.client = ws;
-                room.clientName = displayName;
-                room.clientLocked = true; // Lock the guest slot permanently
-                ws._roomUsername = roomUsername;
-                ws._role = 'client';
 
-                sendJSON(ws, {
-                    type: 'room-joined',
-                    roomUsername,
-                    peerName: room.hostName,
-                    name: displayName,
-                    history: room.messages
-                });
+                // Assign to available slot (host slot if free, else client slot)
+                if (!hostActive) {
+                    room.host = ws;
+                    room.hostName = displayName;
+                    ws._roomUsername = roomUsername;
+                    ws._role = 'host';
 
-                if (room.host) {
-                    sendJSON(room.host, { type: 'peer-joined', peerName: displayName });
+                    const peerName = clientActive ? room.clientName : '';
+
+                    sendJSON(ws, {
+                        type: 'room-joined',
+                        roomUsername,
+                        peerName,
+                        name: displayName,
+                        history: room.messages
+                    });
+
+                    if (clientActive) {
+                        sendJSON(room.client, { type: 'peer-joined', peerName: displayName });
+                    }
+                } else {
+                    room.client = ws;
+                    room.clientName = displayName;
+                    ws._roomUsername = roomUsername;
+                    ws._role = 'client';
+
+                    sendJSON(ws, {
+                        type: 'room-joined',
+                        roomUsername,
+                        peerName: room.hostName,
+                        name: displayName,
+                        history: room.messages
+                    });
+
+                    if (room.host) {
+                        sendJSON(room.host, { type: 'peer-joined', peerName: displayName });
+                    }
                 }
 
-                console.log(`[ROOM] "${displayName}" joined room @${roomUsername} (slot locked)`);
+                console.log(`[ROOM] "${displayName}" joined room @${roomUsername}`);
                 break;
             }
 
@@ -377,20 +375,16 @@ wss.on('connection', (ws) => {
                 break;
             }
 
-            // ===== Dissolve Permanent Room (host only) =====
+            // ===== Dissolve Permanent Room =====
             case 'dissolve-room': {
                 const result = findRoomBySocket(ws);
                 if (!result) return;
                 const { roomUsername, room } = result;
-                if (room.host !== ws) {
-                    sendJSON(ws, { type: 'error', message: 'Only the host can dissolve the room.' });
-                    return;
-                }
                 const peer = getPeer(ws, room);
-                if (peer) sendJSON(peer, { type: 'room-dissolved', message: 'The host has permanently dissolved the room.' });
+                if (peer) sendJSON(peer, { type: 'room-dissolved', message: 'The room was permanently dissolved.' });
                 rooms.delete(roomUsername);
                 sendJSON(ws, { type: 'room-dissolved', message: 'You dissolved the room.' });
-                console.log(`[ROOM] @${roomUsername} dissolved by host`);
+                console.log(`[ROOM] @${roomUsername} dissolved`);
                 break;
             }
 
@@ -418,7 +412,7 @@ function handleLeave(ws) {
     const peer = getPeer(ws, room);
     const leaverName = room.host === ws ? room.hostName : room.clientName;
 
-    // Just disconnect the socket, keep the room permanent
+    // Disconnect the socket so slot becomes available for reconnection
     if (ws === room.host) {
         room.host = null;
     } else if (ws === room.client) {
@@ -452,10 +446,11 @@ wss.on('close', () => clearInterval(heartbeatInterval));
 httpServer.listen(PORT, () => {
     console.log('');
     console.log('  ╔═══════════════════════════════════════════════╗');
-    console.log('  ║      🚀 Realtime Chat V4 Server               ║');
+    console.log('  ║      🚀 Realtime Chat V5 Server               ║');
     console.log('  ╠═══════════════════════════════════════════════╣');
     console.log(`  ║  Local:     http://localhost:${PORT}              ║`);
-    console.log('  ║  Auth:      Room Username + 6-digit Password  ║');
+    console.log('  ║  Auth:      Unique Room Username + Password   ║');
+    console.log('  ║  Capacity:  Max 2 Active Members at a time    ║');
     console.log('  ║  Reset:     Automatic 11:59 PM Daily Reset    ║');
     console.log('  ║  Features:  Edit/Delete, Reply, Media, Reader ║');
     console.log('  ╚═══════════════════════════════════════════════╝');

@@ -1,7 +1,9 @@
 /**
- * Realtime Chat V4 — Frontend Application
+ * Realtime Chat V5 — Frontend Application
  * Features:
- * - Permanent rooms with host-created 6-digit PIN
+ * - Unique Room Username + 6-Digit PIN Password
+ * - "Create Room" exclusively registers new room usernames
+ * - "Join Room" enters existing rooms (Max 2 active members at a time)
  * - Daily 11:59 PM chat reset
  * - Message Edit & Delete
  * - RAR Library story reader (10 pages)
@@ -34,7 +36,7 @@ const DOM = {
     // Edit Modal
     editModal: $('edit-modal'), editInput: $('edit-input'),
     btnEditSave: $('btn-edit-save'), btnEditCancel: $('btn-edit-cancel'),
-    // V3 & V4 elements
+    // V3, V4, V5 elements
     modeToggle: $('mode-toggle'), modeSwitch: $('mode-switch'),
     btnDownloadChat: $('btn-download-chat'),
     pdfViewerScreen: $('pdf-viewer-screen'),
@@ -194,15 +196,16 @@ function handleServerMessage(msg) {
     switch (msg.type) {
         case 'room-created':
             State.roomUsername = msg.roomUsername; State.role = 'host'; State.myName = msg.name;
-            showWaitingScreen(msg.roomUsername, State.pin); setStatus('waiting', 'Permanent Room Active (Waiting…)');
+            showWaitingScreen(msg.roomUsername, State.pin); setStatus('waiting', 'Room Created! Share credentials…');
             if (msg.history && msg.history.length > 0) loadHistory(msg.history);
             break;
 
         case 'room-joined':
             State.roomUsername = msg.roomUsername; State.role = 'client'; State.myName = msg.name;
-            State.peerName = msg.peerName; State.connected = true;
-            showChatScreen(msg.peerName); setStatus('connected', `Connected to ${msg.peerName}`);
-            addSystemMsg('You joined the permanent room');
+            State.peerName = msg.peerName || ''; State.connected = true;
+            showChatScreen(msg.peerName || 'Waiting for peer…');
+            setStatus('connected', msg.peerName ? `Connected to ${msg.peerName}` : `Joined room @${msg.roomUsername}`);
+            addSystemMsg(`You joined room @${msg.roomUsername}`);
             if (msg.history && msg.history.length > 0) loadHistory(msg.history);
             break;
 
