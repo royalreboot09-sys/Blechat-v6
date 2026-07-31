@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="description" content="Realtime Chat V4 — Permanent 6-digit PIN rooms, Daily 11:59 PM reset, Message Edit/Delete, RAR Library">
-    <title>Realtime Chat V4</title>
+    <meta name="description" content="Realtime Chat V6 — Dual Passwords (Master Key & Guest Key), Unique Room Username, Daily 11:59 PM reset, Message Edit/Delete, RAR Library">
+    <title>Realtime Chat V6</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -21,7 +21,7 @@
                     </svg>
                 </div>
                 <div class="header-info">
-                    <h1 id="header-title">Realtime Chat</h1>
+                    <h1 id="header-title">Realtime Chat V6</h1>
                     <div class="status-row" id="status-row">
                         <span class="status-dot" id="status-dot"></span>
                         <span class="status-text" id="status-text">Ready</span>
@@ -68,14 +68,15 @@
                             <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
                         </svg>
                     </div>
-                    <h2>Permanent Chat Rooms</h2>
-                    <p>Create a room with a unique username & 6-digit PIN, or join one. Daily reset at 11:59 PM ✨</p>
+                    <h2>Dual-Key Chat Rooms</h2>
+                    <p>Create a room with Host (Master) & Guest (Normal) passwords, or join one. Daily reset at 11:59 PM ✨</p>
                 </div>
                 <div class="lobby-field">
                     <label for="input-name">Your Display Name</label>
                     <input type="text" id="input-name" placeholder="Enter your name…" maxlength="30" autocomplete="off">
                 </div>
                 <div class="lobby-cards">
+                    <!-- Create Room Card -->
                     <div class="action-card" id="card-create">
                         <div class="card-icon create-icon">
                             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -83,15 +84,23 @@
                             </svg>
                         </div>
                         <h3>Create Room</h3>
-                        <p>Choose a unique room username & 6-digit password</p>
+                        <p>Set a unique room username & passwords for Host & Guest</p>
                         <div class="lobby-field compact">
-                            <input type="text" id="input-room-username" placeholder="Room username (e.g. cool_room)" maxlength="20" autocomplete="off">
+                            <label for="input-room-username">Room Username</label>
+                            <input type="text" id="input-room-username" placeholder="e.g. mystic_room" maxlength="20" autocomplete="off">
                         </div>
-                        <div class="join-input-row">
-                            <input type="text" id="input-create-pin" placeholder="6-digit PIN" maxlength="6" pattern="[0-9]*" inputmode="numeric" autocomplete="off">
-                            <button class="btn btn-primary" id="btn-create">Create</button>
+                        <div class="lobby-field compact">
+                            <label for="input-create-host-pin">Host Password (Master Key)</label>
+                            <input type="text" id="input-create-host-pin" placeholder="6-digit Host PIN" maxlength="6" pattern="[0-9]*" inputmode="numeric" autocomplete="off">
                         </div>
+                        <div class="lobby-field compact">
+                            <label for="input-create-guest-pin">Guest Password (Normal Key)</label>
+                            <input type="text" id="input-create-guest-pin" placeholder="6-digit Guest PIN" maxlength="6" pattern="[0-9]*" inputmode="numeric" autocomplete="off">
+                        </div>
+                        <button class="btn btn-primary wide-btn" id="btn-create">Create Room</button>
                     </div>
+
+                    <!-- Join Room Card -->
                     <div class="action-card" id="card-join">
                         <div class="card-icon join-icon">
                             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -99,14 +108,16 @@
                             </svg>
                         </div>
                         <h3>Join Room</h3>
-                        <p>Enter the room username & password given by host</p>
+                        <p>Enter the room username & password (Host or Guest Key)</p>
                         <div class="lobby-field compact">
+                            <label for="input-join-username">Room Username</label>
                             <input type="text" id="input-join-username" placeholder="Room username" maxlength="20" autocomplete="off">
                         </div>
-                        <div class="join-input-row">
-                            <input type="text" id="input-code" placeholder="6-digit PIN" maxlength="6" pattern="[0-9]*" inputmode="numeric" autocomplete="off">
-                            <button class="btn btn-accent" id="btn-join">Join</button>
+                        <div class="lobby-field compact">
+                            <label for="input-code">Password</label>
+                            <input type="text" id="input-code" placeholder="Host or Guest 6-digit PIN" maxlength="6" pattern="[0-9]*" inputmode="numeric" autocomplete="off">
                         </div>
+                        <button class="btn btn-accent wide-btn" id="btn-join">Join Room</button>
                     </div>
                 </div>
             </div>
@@ -116,16 +127,20 @@
         <div class="waiting-screen hidden" id="waiting-screen">
             <div class="waiting-content">
                 <div class="waiting-spinner"></div>
-                <h2>Waiting for someone to join…</h2>
-                <p>Share these credentials with your guest:</p>
+                <h2>Waiting for guest to join…</h2>
+                <p>Share the Guest Password with Person Y:</p>
                 <div class="room-credentials">
                     <div class="cred-row">
                         <span class="cred-label">Room Username</span>
                         <span class="cred-value" id="waiting-room-username">---</span>
                     </div>
                     <div class="cred-row">
-                        <span class="cred-label">Password</span>
-                        <span class="cred-value room-code-digits" id="room-code-digits">------</span>
+                        <span class="cred-label">Host Password (Master)</span>
+                        <span class="cred-value room-code-digits" id="waiting-host-pin">------</span>
+                    </div>
+                    <div class="cred-row">
+                        <span class="cred-label">Guest Password (Normal)</span>
+                        <span class="cred-value room-code-digits" id="waiting-guest-pin">------</span>
                     </div>
                 </div>
                 <button class="copy-btn wide" id="btn-copy" title="Copy credentials">
@@ -148,7 +163,7 @@
             <div class="chat-messages" id="chat-messages">
                 <div class="chat-welcome" id="chat-welcome">
                     <div class="welcome-icon">💬</div>
-                    <p>Permanent room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p>
+                    <p>Dual-Key Room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p>
                 </div>
             </div>
         </div>

@@ -1,10 +1,12 @@
 /**
- * Realtime Chat V5 — WebSocket Server
+ * Realtime Chat V6 — WebSocket Server
  * 
  * Features:
- * - Permanent rooms with unique room-username + 6-digit PIN password
- * - "Create Room" ONLY creates new rooms; errors if room username is already taken
- * - "Join Room" enters any room with username + password (max 2 active members at a time)
+ * - Permanent rooms with Dual Passwords per Unique Room Username:
+ *   - Host Password (Master Key for Host / Person X)
+ *   - Guest Password (Normal Key for Guest / Person Y)
+ * - "Create Room" requires 3 inputs: Unique Username, Host Password, Guest Password
+ * - "Join Room" authenticates user as Host or Guest depending on which password they enter
  * - Daily midnight chat reset at 11:59 PM
  * - Real-time Message Edit & Delete
  * - Media sharing, WhatsApp-style replies, Chat download consent, RAR Library reader
@@ -59,7 +61,8 @@ const wss = new WebSocketServer({
  * Permanent Rooms Map:
  * rooms = Map<roomUsername, {
  *     roomUsername: string,
- *     password: string,
+ *     hostPassword: string,      // Master Key for Host (Person X)
+ *     guestPassword: string,     // Normal Key for Guest (Person Y)
  *     host: WebSocket | null,
  *     client: WebSocket | null,
  *     hostName: string,
@@ -135,11 +138,12 @@ wss.on('connection', (ws) => {
         }
 
         switch (msg.type) {
-            // ===== Create Permanent Room =====
+            // ===== Create Room with Dual Passwords =====
             case 'create-room': {
                 cleanupSocket(ws);
                 const roomUsername = sanitize(msg.roomUsername || '').toLowerCase();
-                const password = (msg.password || '').trim();
+                const hostPassword = (msg.hostPassword || '').trim();
+                const guestPassword = (msg.guestPassword || '').trim();
                 const displayName = sanitize(msg.name) || 'Host';
 
                 if (!roomUsername || roomUsername.length < 3 || roomUsername.length > 20) {
@@ -150,12 +154,20 @@ wss.on('connection', (ws) => {
                     sendJSON(ws, { type: 'error', message: 'Room username: only lowercase letters, numbers, underscores.' });
                     return;
                 }
-                if (!/^\d{6}$/.test(password)) {
-                    sendJSON(ws, { type: 'error', message: 'Password must be exactly 6 digits.' });
+                if (!/^\d{6}$/.test(hostPassword)) {
+                    sendJSON(ws, { type: 'error', message: 'Host password (Master Key) must be exactly 6 digits.' });
+                    return;
+                }
+                if (!/^\d{6}$/.test(guestPassword)) {
+                    sendJSON(ws, { type: 'error', message: 'Guest password (Normal Key) must be exactly 6 digits.' });
+                    return;
+                }
+                if (hostPassword === guestPassword) {
+                    sendJSON(ws, { type: 'error', message: 'Host and Guest passwords must be different!' });
                     return;
                 }
 
-                // If room username already exists, error out (Do NOT redirect to existing room!)
+                // Check uniqueness
                 if (rooms.has(roomUsername)) {
                     sendJSON(ws, { type: 'error', message: `Room username "@${roomUsername}" is already taken! Please choose a different unique username or use "Join Room" to enter.` });
                     return;
@@ -163,7 +175,8 @@ wss.on('connection', (ws) => {
 
                 rooms.set(roomUsername, {
                     roomUsername,
-                    password,
+                    hostPassword,
+                    guestPassword,
                     host: ws,
                     client: null,
                     hostName: displayName,
@@ -175,12 +188,19 @@ wss.on('connection', (ws) => {
                 ws._roomUsername = roomUsername;
                 ws._role = 'host';
 
-                sendJSON(ws, { type: 'room-created', roomUsername, name: displayName, history: [] });
-                console.log(`[ROOM] Permanent room @${roomUsername} created by "${displayName}"`);
+                sendJSON(ws, {
+                    type: 'room-created',
+                    roomUsername,
+                    hostPassword,
+                    guestPassword,
+                    name: displayName,
+                    history: []
+                });
+                console.log(`[ROOM] Room @${roomUsername} created by "${displayName}" with Dual Passwords (Host: ${hostPassword}, Guest: ${guestPassword})`);
                 break;
             }
 
-            // ===== Join Room =====
+            // ===== Join Room via Password Authentication =====
             case 'join-room': {
                 const roomUsername = sanitize(msg.roomUsername || '').toLowerCase();
                 const password = (msg.password || '').trim();
@@ -192,42 +212,41 @@ wss.on('connection', (ws) => {
                 }
 
                 if (!rooms.has(roomUsername)) {
-                    sendJSON(ws, { type: 'error', message: `Room "@${roomUsername}" does not exist. Please check the username or create a new room.` });
+                    sendJSON(ws, { type: 'error', message: `Room "@${roomUsername}" does not exist. Check username or create a new room.` });
                     return;
                 }
 
                 const room = rooms.get(roomUsername);
 
-                // Verify password
-                if (room.password !== password) {
-                    sendJSON(ws, { type: 'error', message: 'Incorrect 6-digit password for room @' + roomUsername });
+                // Authenticate password as Host or Guest
+                let isHost = (password === room.hostPassword);
+                let isGuest = (password === room.guestPassword);
+
+                if (!isHost && !isGuest) {
+                    sendJSON(ws, { type: 'error', message: `Invalid password for room @${roomUsername}. Enter valid Host or Guest password.` });
                     return;
                 }
 
-                // Check active connected sockets count (Max 2 allowed at a time)
-                const hostActive = room.host && room.host.readyState === 1;
-                const clientActive = room.client && room.client.readyState === 1;
+                if (isHost) {
+                    // Check if host slot is currently taken
+                    if (room.host && room.host.readyState === 1) {
+                        sendJSON(ws, { type: 'error', message: `Host slot is already active in room @${roomUsername}.` });
+                        return;
+                    }
 
-                if (hostActive && clientActive) {
-                    sendJSON(ws, { type: 'error', message: `Room "@${roomUsername}" is full! Maximum 2 members allowed at a time.` });
-                    return;
-                }
-
-                cleanupSocket(ws);
-
-                // Assign to available slot (host slot if free, else client slot)
-                if (!hostActive) {
+                    cleanupSocket(ws);
                     room.host = ws;
                     room.hostName = displayName;
                     ws._roomUsername = roomUsername;
                     ws._role = 'host';
 
-                    const peerName = clientActive ? room.clientName : '';
+                    const clientActive = room.client && room.client.readyState === 1;
 
                     sendJSON(ws, {
                         type: 'room-joined',
                         roomUsername,
-                        peerName,
+                        role: 'host',
+                        peerName: clientActive ? room.clientName : '',
                         name: displayName,
                         history: room.messages
                     });
@@ -235,26 +254,36 @@ wss.on('connection', (ws) => {
                     if (clientActive) {
                         sendJSON(room.client, { type: 'peer-joined', peerName: displayName });
                     }
-                } else {
+                    console.log(`[ROOM] "${displayName}" joined @${roomUsername} as HOST (Master Key)`);
+                } else if (isGuest) {
+                    // Check if guest slot is currently taken
+                    if (room.client && room.client.readyState === 1) {
+                        sendJSON(ws, { type: 'error', message: `Guest slot is already active in room @${roomUsername}.` });
+                        return;
+                    }
+
+                    cleanupSocket(ws);
                     room.client = ws;
                     room.clientName = displayName;
                     ws._roomUsername = roomUsername;
                     ws._role = 'client';
 
+                    const hostActive = room.host && room.host.readyState === 1;
+
                     sendJSON(ws, {
                         type: 'room-joined',
                         roomUsername,
-                        peerName: room.hostName,
+                        role: 'client',
+                        peerName: hostActive ? room.hostName : '',
                         name: displayName,
                         history: room.messages
                     });
 
-                    if (room.host) {
+                    if (hostActive) {
                         sendJSON(room.host, { type: 'peer-joined', peerName: displayName });
                     }
+                    console.log(`[ROOM] "${displayName}" joined @${roomUsername} as GUEST (Normal Key)`);
                 }
-
-                console.log(`[ROOM] "${displayName}" joined room @${roomUsername}`);
                 break;
             }
 
@@ -375,7 +404,7 @@ wss.on('connection', (ws) => {
                 break;
             }
 
-            // ===== Dissolve Permanent Room =====
+            // ===== Dissolve Room =====
             case 'dissolve-room': {
                 const result = findRoomBySocket(ws);
                 if (!result) return;
@@ -412,7 +441,6 @@ function handleLeave(ws) {
     const peer = getPeer(ws, room);
     const leaverName = room.host === ws ? room.hostName : room.clientName;
 
-    // Disconnect the socket so slot becomes available for reconnection
     if (ws === room.host) {
         room.host = null;
     } else if (ws === room.client) {
@@ -446,11 +474,11 @@ wss.on('close', () => clearInterval(heartbeatInterval));
 httpServer.listen(PORT, () => {
     console.log('');
     console.log('  ╔═══════════════════════════════════════════════╗');
-    console.log('  ║      🚀 Realtime Chat V5 Server               ║');
+    console.log('  ║      🚀 Realtime Chat V6 Server               ║');
     console.log('  ╠═══════════════════════════════════════════════╣');
     console.log(`  ║  Local:     http://localhost:${PORT}              ║`);
-    console.log('  ║  Auth:      Unique Room Username + Password   ║');
-    console.log('  ║  Capacity:  Max 2 Active Members at a time    ║');
+    console.log('  ║  Auth:      Dual Passwords (Host & Guest)     ║');
+    console.log('  ║  Capacity:  Max 1 Host + 1 Guest (2 Total)    ║');
     console.log('  ║  Reset:     Automatic 11:59 PM Daily Reset    ║');
     console.log('  ║  Features:  Edit/Delete, Reply, Media, Reader ║');
     console.log('  ╚═══════════════════════════════════════════════╝');

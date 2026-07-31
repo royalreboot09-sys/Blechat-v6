@@ -1,7 +1,7 @@
 {
-    "name": "realtime-chat-v5",
-    "version": "5.0.0",
-    "description": "Real-time chat V5 with unique room username + 6-digit PIN password, locked max 2 members, 11:59 PM daily reset, Edit/Delete, and RAR Library",
+    "name": "realtime-chat-v6",
+    "version": "6.0.0",
+    "description": "Real-time chat V6 with Dual Passwords (Master Key for Host, Normal Key for Guest), unique room username, 11:59 PM daily reset, Edit/Delete, and RAR Library",
     "main": "backend/server.js",
     "scripts": {
         "start": "node backend/server.js",

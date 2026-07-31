@@ -1,9 +1,9 @@
 /**
- * Realtime Chat V5 — Frontend Application
+ * Realtime Chat V6 — Frontend Application
  * Features:
- * - Unique Room Username + 6-Digit PIN Password
- * - "Create Room" exclusively registers new room usernames
- * - "Join Room" enters existing rooms (Max 2 active members at a time)
+ * - Permanent rooms with Dual Passwords (Host Password & Guest Password)
+ * - "Create Room" sets Unique Room Username, Host PIN & Guest PIN
+ * - "Join Room" authenticates as Host or Guest depending on PIN entered
  * - Daily 11:59 PM chat reset
  * - Message Edit & Delete
  * - RAR Library story reader (10 pages)
@@ -17,10 +17,14 @@ const DOM = {
     headerTitle: $('header-title'), btnLeave: $('btn-leave'), btnDissolve: $('btn-dissolve'),
     lobby: $('lobby'), inputName: $('input-name'),
     inputRoomUsername: $('input-room-username'),
-    inputCreatePin: $('input-create-pin'), btnCreate: $('btn-create'),
+    inputCreateHostPin: $('input-create-host-pin'),
+    inputCreateGuestPin: $('input-create-guest-pin'),
+    btnCreate: $('btn-create'),
     inputJoinUsername: $('input-join-username'),
     inputCode: $('input-code'), btnJoin: $('btn-join'),
-    waitingScreen: $('waiting-screen'), codeDigits: $('room-code-digits'),
+    waitingScreen: $('waiting-screen'),
+    waitingHostPin: $('waiting-host-pin'),
+    waitingGuestPin: $('waiting-guest-pin'),
     waitingRoomUsername: $('waiting-room-username'),
     btnCopy: $('btn-copy'), copyLabel: $('copy-label'), btnCancelWait: $('btn-cancel-wait'),
     chatScreen: $('chat-screen'), peerBar: $('peer-bar'),
@@ -36,7 +40,7 @@ const DOM = {
     // Edit Modal
     editModal: $('edit-modal'), editInput: $('edit-input'),
     btnEditSave: $('btn-edit-save'), btnEditCancel: $('btn-edit-cancel'),
-    // V3, V4, V5 elements
+    // V3-V6 elements
     modeToggle: $('mode-toggle'), modeSwitch: $('mode-switch'),
     btnDownloadChat: $('btn-download-chat'),
     pdfViewerScreen: $('pdf-viewer-screen'),
@@ -52,7 +56,7 @@ const DOM = {
 
 // ===== State =====
 const State = {
-    ws: null, roomUsername: null, pin: null, role: null, myName: '', peerName: '',
+    ws: null, roomUsername: null, pin: null, hostPassword: null, guestPassword: null, role: null, myName: '', peerName: '',
     connected: false, typingTimeout: null,
     reconnectAttempts: 0, maxReconnect: 5,
     pendingMedia: null, _pendingAction: null,
@@ -105,13 +109,13 @@ function attachListeners() {
         sendTypingSignal(true);
     });
 
-    DOM.inputCreatePin.addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
+    DOM.inputCreateHostPin.addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
+    DOM.inputCreateGuestPin.addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
     DOM.inputCode.addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
     DOM.inputRoomUsername.addEventListener('input', (e) => { e.target.value = e.target.value.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20).toLowerCase(); });
     DOM.inputJoinUsername.addEventListener('input', (e) => { e.target.value = e.target.value.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20).toLowerCase(); });
 
     DOM.inputCode.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(); });
-    DOM.inputCreatePin.addEventListener('keydown', (e) => { if (e.key === 'Enter') createRoom(); });
 
     // Media
     DOM.btnAttach.addEventListener('click', () => DOM.fileInput.click());
@@ -152,9 +156,9 @@ function connectWebSocket() {
         State.ws = ws; State.reconnectAttempts = 0;
         setStatus('connected', 'Connected to server');
         if (State._pendingAction) { const a = State._pendingAction; State._pendingAction = null; a(); }
-        if (State.roomUsername && State.role) {
+        if (State.roomUsername && State.pin) {
             ws.send(JSON.stringify({
-                type: State.role === 'host' ? 'create-room' : 'join-room',
+                type: 'join-room',
                 roomUsername: State.roomUsername,
                 password: State.pin,
                 name: State.myName
@@ -195,17 +199,26 @@ function ensureConnected(action) {
 function handleServerMessage(msg) {
     switch (msg.type) {
         case 'room-created':
-            State.roomUsername = msg.roomUsername; State.role = 'host'; State.myName = msg.name;
-            showWaitingScreen(msg.roomUsername, State.pin); setStatus('waiting', 'Room Created! Share credentials…');
+            State.roomUsername = msg.roomUsername;
+            State.hostPassword = msg.hostPassword;
+            State.guestPassword = msg.guestPassword;
+            State.pin = msg.hostPassword;
+            State.role = 'host';
+            State.myName = msg.name;
+            showWaitingScreen(msg.roomUsername, msg.hostPassword, msg.guestPassword);
+            setStatus('waiting', 'Room Created! Share Guest Password…');
             if (msg.history && msg.history.length > 0) loadHistory(msg.history);
             break;
 
         case 'room-joined':
-            State.roomUsername = msg.roomUsername; State.role = 'client'; State.myName = msg.name;
-            State.peerName = msg.peerName || ''; State.connected = true;
+            State.roomUsername = msg.roomUsername;
+            State.role = msg.role;
+            State.myName = msg.name;
+            State.peerName = msg.peerName || '';
+            State.connected = true;
             showChatScreen(msg.peerName || 'Waiting for peer…');
-            setStatus('connected', msg.peerName ? `Connected to ${msg.peerName}` : `Joined room @${msg.roomUsername}`);
-            addSystemMsg(`You joined room @${msg.roomUsername}`);
+            setStatus('connected', msg.peerName ? `Connected to ${msg.peerName}` : `Joined room @${msg.roomUsername} (${msg.role.toUpperCase()})`);
+            addSystemMsg(`You joined room @${msg.roomUsername} as ${msg.role.toUpperCase()}`);
             if (msg.history && msg.history.length > 0) loadHistory(msg.history);
             break;
 
@@ -257,7 +270,7 @@ function handleServerMessage(msg) {
 
         // ===== Daily 11:59 PM Reset =====
         case 'daily-reset':
-            DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Permanent room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
+            DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Dual-Key room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
             State.chatHistory = [];
             addSystemMsg(msg.message || '🌙 Midnight Reset — Chat history cleared for the new day ✨');
             break;
@@ -292,28 +305,46 @@ function handleServerMessage(msg) {
 function createRoom() {
     const name = DOM.inputName.value.trim() || 'Host';
     const roomUsername = DOM.inputRoomUsername.value.trim().toLowerCase();
-    const pin = DOM.inputCreatePin.value.trim();
+    const hostPassword = DOM.inputCreateHostPin.value.trim();
+    const guestPassword = DOM.inputCreateGuestPin.value.trim();
 
     if (!roomUsername || roomUsername.length < 3) {
         showToast('Room username must be at least 3 characters');
         return;
     }
-    if (pin.length !== 6) {
-        showToast('Enter a 6-digit PIN password');
+    if (hostPassword.length !== 6) {
+        showToast('Enter a 6-digit Host Password (Master Key)');
+        return;
+    }
+    if (guestPassword.length !== 6) {
+        showToast('Enter a 6-digit Guest Password (Normal Key)');
+        return;
+    }
+    if (hostPassword === guestPassword) {
+        showToast('Host and Guest passwords must be different!');
         return;
     }
 
     State.myName = name;
-    State.pin = pin;
     State.roomUsername = roomUsername;
+    State.hostPassword = hostPassword;
+    State.guestPassword = guestPassword;
+    State.pin = hostPassword;
     localStorage.setItem('chat-username', name);
+
     ensureConnected(() => {
-        State.ws.send(JSON.stringify({ type: 'create-room', name: State.myName, roomUsername, password: pin }));
+        State.ws.send(JSON.stringify({
+            type: 'create-room',
+            name: State.myName,
+            roomUsername,
+            hostPassword,
+            guestPassword
+        }));
     });
 }
 
 function joinRoom() {
-    const name = DOM.inputName.value.trim() || 'Guest';
+    const name = DOM.inputName.value.trim() || 'User';
     const roomUsername = DOM.inputJoinUsername.value.trim().toLowerCase();
     const pin = DOM.inputCode.value.trim();
 
@@ -330,6 +361,7 @@ function joinRoom() {
     State.pin = pin;
     State.roomUsername = roomUsername;
     localStorage.setItem('chat-username', name);
+
     ensureConnected(() => {
         State.ws.send(JSON.stringify({ type: 'join-room', roomUsername, password: pin, name: State.myName }));
     });
@@ -375,7 +407,7 @@ function sendTypingSignal(isTyping) {
 }
 
 function copyRoomCode() {
-    const text = `Room: @${State.roomUsername || '---'}\nPassword: ${State.pin || '------'}`;
+    const text = `Room: @${State.roomUsername || '---'}\nHost Password (Master): ${State.hostPassword || '------'}\nGuest Password (Normal): ${State.guestPassword || '------'}`;
     navigator.clipboard.writeText(text).then(() => {
         DOM.copyLabel.textContent = 'Copied!'; DOM.btnCopy.classList.add('copied');
         setTimeout(() => { DOM.copyLabel.textContent = 'Copy Credentials'; DOM.btnCopy.classList.remove('copied'); }, 2000);
@@ -429,7 +461,7 @@ function cancelReply() { State.replyTo = null; DOM.replyBar.classList.add('hidde
 
 // ===== Chat History Loader =====
 function loadHistory(messages) {
-    DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Permanent room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
+    DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Dual-Key room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
     State.chatHistory = [];
     messages.forEach(m => {
         if (m.type === 'text') {
@@ -493,7 +525,7 @@ function togglePdfMode() {
         DOM.pdfViewerScreen.classList.remove('hidden');
         showStoryPage(State.currentPageIndex || 0);
     } else {
-        DOM.headerTitle.textContent = 'Realtime Chat';
+        DOM.headerTitle.textContent = 'Realtime Chat V6';
         DOM.statusRow.classList.remove('hidden');
         if (State.connected) {
             DOM.btnDownloadChat.classList.remove('hidden');
@@ -605,11 +637,9 @@ function addChatMessage(text, type, timestamp, msgId, replyTo, senderName) {
     meta.innerHTML = `<span class="msg-time">${timeStr}</span>`;
     bubble.appendChild(meta);
 
-    // Action Buttons Group (Reply, Edit, Delete)
     const actionsGroup = document.createElement('div');
     actionsGroup.className = 'msg-actions-group';
 
-    // Reply Button
     const replyBtn = document.createElement('button');
     replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply';
     replyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>`;
@@ -619,7 +649,6 @@ function addChatMessage(text, type, timestamp, msgId, replyTo, senderName) {
     });
     actionsGroup.appendChild(replyBtn);
 
-    // Edit & Delete Buttons (for own messages or sent messages)
     if (type === 'sent') {
         const editBtn = document.createElement('button');
         editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit';
@@ -749,12 +778,13 @@ function closeLightbox() {
 }
 
 // ===== UI Screens =====
-function showWaitingScreen(roomUsername, pin) {
+function showWaitingScreen(roomUsername, hostPin, guestPin) {
     DOM.lobby.classList.add('hidden'); DOM.chatScreen.classList.add('hidden'); DOM.inputBar.classList.add('hidden');
     DOM.replyBar.classList.add('hidden'); DOM.waitingScreen.classList.remove('hidden');
     DOM.btnLeave.classList.remove('hidden');
     DOM.waitingRoomUsername.textContent = '@' + (roomUsername || '---');
-    DOM.codeDigits.textContent = pin || '------';
+    DOM.waitingHostPin.textContent = hostPin || '------';
+    DOM.waitingGuestPin.textContent = guestPin || '------';
     if (State.role === 'host') DOM.btnDissolve.classList.remove('hidden');
 }
 function showChatScreen(peerName) {
@@ -773,10 +803,10 @@ function resetToLobby() {
     DOM.modeToggle.classList.add('hidden'); DOM.pdfViewerScreen.classList.add('hidden');
     DOM.editModal.classList.add('hidden'); DOM.errorOverlay.classList.add('hidden');
     DOM.modeSwitch.checked = false; State.pdfMode = false;
-    DOM.headerTitle.textContent = 'Realtime Chat'; DOM.statusRow.classList.remove('hidden');
-    DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Permanent room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
+    DOM.headerTitle.textContent = 'Realtime Chat V6'; DOM.statusRow.classList.remove('hidden');
+    DOM.chatMessages.innerHTML = `<div class="chat-welcome"><div class="welcome-icon">💬</div><p>Dual-Key room active! Say hello.<br><small style="opacity:0.7">Chats auto-reset at 11:59 PM daily.</small></p></div>`;
     setStatus(isConnected() ? 'connected' : '', isConnected() ? 'Connected to server' : 'Ready');
-    State.pin = null; State.roomUsername = null; State.role = null; State.peerName = ''; State.connected = false;
+    State.pin = null; State.roomUsername = null; State.hostPassword = null; State.guestPassword = null; State.role = null; State.peerName = ''; State.connected = false;
     State.chatHistory = []; cancelReply(); closeEditModal();
 }
 

@@ -149,6 +149,7 @@ body { font-family:var(--font); background:var(--bg-base); color:var(--text-prim
 .btn-accent:hover { transform:translateY(-1px); box-shadow:0 4px 15px rgba(5,150,105,0.3); }
 .btn-ghost { background:transparent; color:var(--text-secondary); border:1.5px solid var(--border); }
 .btn-ghost:hover { background:var(--bg-input); color:var(--text-primary); }
+.wide-btn { width:100%; margin-top:8px; }
 
 /* ===== Waiting ===== */
 .waiting-screen { flex:1; display:flex; align-items:center; justify-content:center; padding:32px 20px; animation:fadeSlideUp 0.3s; }
