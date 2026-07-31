@@ -1,0 +1,52 @@
+﻿[
+    {
+        "title":  "An Old Dog",
+        "page":  1,
+        "file":  "page1.png"
+    },
+    {
+        "title":  "Joke about a Bed",
+        "page":  2,
+        "file":  "page2.png"
+    },
+    {
+        "title":  "Petrol Station",
+        "page":  3,
+        "file":  "page3.png"
+    },
+    {
+        "title":  "Frying Pan",
+        "page":  4,
+        "file":  "page4.png"
+    },
+    {
+        "title":  "Hot Summer Day",
+        "page":  5,
+        "file":  "page5.png"
+    },
+    {
+        "title":  "Game",
+        "page":  6,
+        "file":  "page6.png"
+    },
+    {
+        "title":  "Photographer",
+        "page":  7,
+        "file":  "page7.png"
+    },
+    {
+        "title":  "Swimmer",
+        "page":  8,
+        "file":  "page8.png"
+    },
+    {
+        "title":  "Optimist",
+        "page":  9,
+        "file":  "page9.png"
+    },
+    {
+        "title":  "Best Friend",
+        "page":  10,
+        "file":  "page10.png"
+    }
+]
