@@ -2,14 +2,16 @@
  * Realtime Chat V6 — WebSocket Server
  * 
  * Features:
- * - Permanent rooms with Dual Passwords per Unique Room Username:
+ * - Permanent rooms with Disk Persistence (data/rooms.json): Rooms persist across server sleeps/restarts until host dissolves!
+ * - Dual Passwords per Unique Room Username:
  *   - Host Password (Master Key for Host / Person X)
  *   - Guest Password (Normal Key for Guest / Person Y)
  * - "Create Room" requires 3 inputs: Unique Username, Host Password, Guest Password
  * - "Join Room" authenticates user as Host or Guest depending on which password they enter
  * - Daily midnight chat reset at 11:59 PM
  * - Real-time Message Edit & Delete
- * - Media sharing, WhatsApp-style replies, Chat download consent, RAR Library reader
+ * - Media & PDF sharing up to 30 MB
+ * - WhatsApp-style replies, Chat download consent, RAR Library reader
  */
 
 const http = require('http');
@@ -18,7 +20,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
-const MAX_MEDIA_SIZE = 10 * 1024 * 1024;
+const MAX_MEDIA_SIZE = 30 * 1024 * 1024; // 30 MB
 
 // ===== Static File Server =====
 const MIME_TYPES = {
@@ -30,6 +32,7 @@ const MIME_TYPES = {
     '.jpg': 'image/jpeg',
     '.ico': 'image/x-icon',
     '.svg': 'image/svg+xml',
+    '.pdf': 'application/pdf',
 };
 
 const FRONTEND_DIR = path.join(__dirname, '..', 'frontend');
@@ -54,7 +57,7 @@ const httpServer = http.createServer((req, res) => {
 // ===== WebSocket Server =====
 const wss = new WebSocketServer({
     server: httpServer,
-    maxPayload: MAX_MEDIA_SIZE + 1024 * 100
+    maxPayload: MAX_MEDIA_SIZE + 1024 * 500 // Allow 30MB base64 payloads
 });
 
 /**
@@ -72,6 +75,63 @@ const wss = new WebSocketServer({
  * }>
  */
 const rooms = new Map();
+
+// ===== JSON Disk Persistence =====
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
+
+if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function loadRoomsFromDisk() {
+    try {
+        if (fs.existsSync(ROOMS_FILE)) {
+            const raw = fs.readFileSync(ROOMS_FILE, 'utf8');
+            const data = JSON.parse(raw);
+            for (const key in data) {
+                const r = data[key];
+                rooms.set(key, {
+                    roomUsername: r.roomUsername,
+                    hostPassword: r.hostPassword,
+                    guestPassword: r.guestPassword,
+                    host: null,
+                    client: null,
+                    hostName: r.hostName || 'Host',
+                    clientName: r.clientName || '',
+                    messages: r.messages || [],
+                    lastResetDate: r.lastResetDate || getTodayString()
+                });
+            }
+            console.log(`[PERSISTENCE] Loaded ${rooms.size} permanent room(s) from disk.`);
+        }
+    } catch (err) {
+        console.error('[PERSISTENCE] Error loading rooms from disk:', err.message);
+    }
+}
+
+function saveRoomsToDisk() {
+    try {
+        const obj = {};
+        for (const [key, r] of rooms.entries()) {
+            obj[key] = {
+                roomUsername: r.roomUsername,
+                hostPassword: r.hostPassword,
+                guestPassword: r.guestPassword,
+                hostName: r.hostName,
+                clientName: r.clientName,
+                messages: r.messages,
+                lastResetDate: r.lastResetDate
+            };
+        }
+        fs.writeFileSync(ROOMS_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    } catch (err) {
+        console.error('[PERSISTENCE] Error saving rooms to disk:', err.message);
+    }
+}
+
+// Load persisted rooms at startup
+loadRoomsFromDisk();
 
 function sendJSON(ws, data) {
     if (ws && ws.readyState === 1) {
@@ -107,10 +167,12 @@ setInterval(() => {
     const today = getTodayString();
 
     if (hours === 23 && minutes === 59) {
+        let updated = false;
         for (const [key, room] of rooms.entries()) {
             if (room.lastResetDate !== today) {
                 room.messages = [];
                 room.lastResetDate = today;
+                updated = true;
                 console.log(`[RESET] Daily 11:59 PM reset for room @${key}`);
                 const resetMsg = {
                     type: 'daily-reset',
@@ -120,6 +182,7 @@ setInterval(() => {
                 if (room.client) sendJSON(room.client, resetMsg);
             }
         }
+        if (updated) saveRoomsToDisk();
     }
 }, 20000);
 
@@ -185,6 +248,8 @@ wss.on('connection', (ws) => {
                     lastResetDate: getTodayString()
                 });
 
+                saveRoomsToDisk();
+
                 ws._roomUsername = roomUsername;
                 ws._role = 'host';
 
@@ -240,6 +305,8 @@ wss.on('connection', (ws) => {
                     ws._roomUsername = roomUsername;
                     ws._role = 'host';
 
+                    saveRoomsToDisk();
+
                     const clientActive = room.client && room.client.readyState === 1;
 
                     sendJSON(ws, {
@@ -267,6 +334,8 @@ wss.on('connection', (ws) => {
                     room.clientName = displayName;
                     ws._roomUsername = roomUsername;
                     ws._role = 'client';
+
+                    saveRoomsToDisk();
 
                     const hostActive = room.host && room.host.readyState === 1;
 
@@ -303,6 +372,7 @@ wss.on('connection', (ws) => {
                 const replyTo = msg.replyTo || null;
 
                 room.messages.push({ msgId, type: 'text', text, senderRole, senderName, timestamp, replyTo, edited: false });
+                saveRoomsToDisk();
 
                 if (peer) sendJSON(peer, { type: 'chat-message', text, senderRole, senderName, timestamp, msgId, replyTo });
                 sendJSON(ws, { type: 'message-sent', text, senderRole, timestamp, msgId, replyTo });
@@ -320,7 +390,7 @@ wss.on('connection', (ws) => {
 
                 const trimmed = newText.trim();
                 const msgObj = room.messages.find(m => m.msgId === msgId);
-                if (msgObj) { msgObj.text = trimmed; msgObj.edited = true; }
+                if (msgObj) { msgObj.text = trimmed; msgObj.edited = true; saveRoomsToDisk(); }
 
                 const editPayload = { type: 'message-edited', msgId, newText: trimmed };
                 sendJSON(ws, editPayload);
@@ -338,7 +408,7 @@ wss.on('connection', (ws) => {
                 if (!msgId) return;
 
                 const idx = room.messages.findIndex(m => m.msgId === msgId);
-                if (idx !== -1) room.messages.splice(idx, 1);
+                if (idx !== -1) { room.messages.splice(idx, 1); saveRoomsToDisk(); }
 
                 const deletePayload = { type: 'message-deleted', msgId };
                 sendJSON(ws, deletePayload);
@@ -346,7 +416,7 @@ wss.on('connection', (ws) => {
                 break;
             }
 
-            // ===== Media Message =====
+            // ===== Media / PDF Message =====
             case 'media-message': {
                 const result = findRoomBySocket(ws);
                 if (!result) return;
@@ -355,13 +425,13 @@ wss.on('connection', (ws) => {
                 const { data: mediaData, mediaType, fileName, fileSize } = msg;
                 if (!mediaData || !mediaType) return;
 
-                const allowedTypes = ['image/jpeg','image/png','image/gif','image/webp','video/mp4','video/webm'];
+                const allowedTypes = ['image/jpeg','image/png','image/gif','image/webp','video/mp4','video/webm','application/pdf'];
                 if (!allowedTypes.includes(mediaType)) {
-                    sendJSON(ws, { type: 'error', message: 'Unsupported file type.' });
+                    sendJSON(ws, { type: 'error', message: 'Unsupported file type. Allowed: Images, Videos, PDFs.' });
                     return;
                 }
                 if (fileSize && fileSize > MAX_MEDIA_SIZE) {
-                    sendJSON(ws, { type: 'error', message: 'File too large (max 10MB).' });
+                    sendJSON(ws, { type: 'error', message: 'File too large (max 30MB).' });
                     return;
                 }
 
@@ -371,6 +441,7 @@ wss.on('connection', (ws) => {
                 const msgId = 'm_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
 
                 room.messages.push({ msgId, type: 'media', data: mediaData, mediaType, fileName, senderRole, senderName, timestamp });
+                saveRoomsToDisk();
 
                 if (peer) sendJSON(peer, { type: 'media-message', data: mediaData, mediaType, fileName, senderRole, senderName, timestamp, msgId });
                 sendJSON(ws, { type: 'media-sent', data: mediaData, mediaType, fileName, senderRole, timestamp, msgId });
@@ -414,6 +485,7 @@ wss.on('connection', (ws) => {
                 const peer = getPeer(ws, room);
                 if (peer) sendJSON(peer, { type: 'room-dissolved', message: 'The room was permanently dissolved.' });
                 rooms.delete(roomUsername);
+                saveRoomsToDisk();
                 sendJSON(ws, { type: 'room-dissolved', message: 'You dissolved the room.' });
                 console.log(`[ROOM] @${roomUsername} dissolved`);
                 break;
@@ -478,11 +550,12 @@ httpServer.listen(PORT, () => {
     console.log('  ╔═══════════════════════════════════════════════╗');
     console.log('  ║      🚀 Realtime Chat V6 Server               ║');
     console.log('  ╠═══════════════════════════════════════════════╣');
-    console.log(`  ║  Local:     http://localhost:${PORT}              ║`);
-    console.log('  ║  Auth:      Dual Passwords (Host & Guest)     ║');
-    console.log('  ║  Capacity:  Max 1 Host + 1 Guest (2 Total)    ║');
-    console.log('  ║  Reset:     Automatic 11:59 PM Daily Reset    ║');
-    console.log('  ║  Features:  Edit/Delete, Reply, Media, Reader ║');
+    console.log(`  ║  Local:       http://localhost:${PORT}            ║`);
+    console.log('  ║  Auth:        Dual Passwords (Host & Guest)   ║');
+    console.log('  ║  Capacity:    Max 1 Host + 1 Guest (2 Total)  ║');
+    console.log('  ║  Persistence: JSON Disk Storage (data/rooms)  ║');
+    console.log('  ║  Media Limit: 30 MB (Photos, Videos, PDFs)   ║');
+    console.log('  ║  Reset:       Automatic 11:59 PM Daily Reset  ║');
     console.log('  ╚═══════════════════════════════════════════════╝');
     console.log('');
 });

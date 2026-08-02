@@ -430,3 +430,68 @@ body { font-family:var(--font); background:var(--bg-base); color:var(--text-prim
 @supports (padding-bottom:env(safe-area-inset-bottom)) {
     .input-bar { padding-bottom:calc(10px + env(safe-area-inset-bottom)); }
 }
+
+/* ===== PDF Card & Preview Styling ===== */
+.pdf-preview-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+}
+.pdf-chat-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.pdf-chat-card:hover {
+    background: rgba(255, 255, 255, 0.14);
+    transform: translateY(-1px);
+}
+.pdf-card-icon {
+    font-size: 26px;
+    line-height: 1;
+}
+.pdf-card-info {
+    flex: 1;
+    min-width: 0;
+}
+.pdf-card-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.pdf-card-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+.pdf-card-btn {
+    background: rgba(255, 255, 255, 0.15);
+    border: none;
+    color: var(--text-primary);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+.pdf-card-btn:hover {
+    background: var(--blue-500);
+    color: white;
+}

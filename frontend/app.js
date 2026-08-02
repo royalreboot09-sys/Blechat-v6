@@ -79,7 +79,7 @@ const State = {
     ]
 };
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30 MB
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', () => {
@@ -575,13 +575,13 @@ function handleReaderKeyPress(e) {
     if (e.key === 'ArrowRight') nextStoryPage();
 }
 
-// ===== Media Handling =====
+// ===== Media & PDF Handling =====
 function handleFileSelect(e) {
     const file = e.target.files[0]; if (!file) return;
     DOM.fileInput.value = '';
-    const allowedTypes = ['image/jpeg','image/png','image/gif','image/webp','video/mp4','video/webm'];
-    if (!allowedTypes.includes(file.type)) { showToast('Only images and videos are supported'); return; }
-    if (file.size > MAX_FILE_SIZE) { showToast(`File too large (${formatSize(file.size)}). Max 10MB.`); return; }
+    const allowedTypes = ['image/jpeg','image/png','image/gif','image/webp','video/mp4','video/webm','application/pdf'];
+    if (!allowedTypes.includes(file.type)) { showToast('Only images, videos, and PDFs are supported'); return; }
+    if (file.size > MAX_FILE_SIZE) { showToast(`File too large (${formatSize(file.size)}). Max 30MB.`); return; }
     const reader = new FileReader();
     reader.onload = (evt) => {
         State.pendingMedia = { data: evt.target.result, mediaType: file.type, fileName: file.name, fileSize: file.size };
@@ -593,7 +593,16 @@ function showPreview(dataUrl, mediaType, fileName, fileSize) {
     DOM.previewFilename.textContent = fileName;
     DOM.previewSize.textContent = formatSize(fileSize);
     DOM.previewBody.innerHTML = '';
-    if (mediaType.startsWith('video')) {
+    if (mediaType === 'application/pdf') {
+        const pdfBox = document.createElement('div');
+        pdfBox.className = 'pdf-preview-box';
+        pdfBox.innerHTML = `
+            <div style="font-size:48px;margin-bottom:8px">📄</div>
+            <div style="font-weight:600;font-size:15px;color:var(--text-primary);text-align:center;word-break:break-all">${escapeHTML(fileName)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">PDF Document • ${formatSize(fileSize)}</div>
+        `;
+        DOM.previewBody.appendChild(pdfBox);
+    } else if (mediaType.startsWith('video')) {
         const v = document.createElement('video'); v.src = dataUrl; v.controls = true; v.muted = true;
         v.style.cssText = 'max-width:100%;max-height:60vh'; DOM.previewBody.appendChild(v);
     } else {
@@ -687,7 +696,8 @@ function addMediaMessage(dataUrl, mediaType, fileName, type, timestamp, msgId, s
 
     const time = timestamp ? new Date(timestamp) : new Date();
     const timeStr = time.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true });
-    const isVideo = mediaType.startsWith('video');
+    const isVideo = mediaType ? mediaType.startsWith('video') : false;
+    const isPdf = mediaType === 'application/pdf';
 
     const wrapper = document.createElement('div');
     wrapper.className = 'msg-row-wrapper';
@@ -698,7 +708,28 @@ function addMediaMessage(dataUrl, mediaType, fileName, type, timestamp, msgId, s
     const container = document.createElement('div');
     container.className = 'media-container';
 
-    if (isVideo) {
+    if (isPdf) {
+        const pdfCard = document.createElement('div');
+        pdfCard.className = 'pdf-chat-card';
+        pdfCard.innerHTML = `
+            <div class="pdf-card-icon">📄</div>
+            <div class="pdf-card-info">
+                <div class="pdf-card-name">${escapeHTML(fileName || 'Document.pdf')}</div>
+                <div class="pdf-card-sub">PDF Document</div>
+            </div>
+            <button class="pdf-card-btn" title="Download PDF">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+        `;
+        pdfCard.querySelector('.pdf-card-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            downloadMedia(dataUrl, fileName || 'document.pdf');
+        });
+        pdfCard.addEventListener('click', () => {
+            downloadMedia(dataUrl, fileName || 'document.pdf');
+        });
+        container.appendChild(pdfCard);
+    } else if (isVideo) {
         const video = document.createElement('video');
         video.src = dataUrl; video.preload = 'metadata'; video.muted = true; video.playsInline = true;
         container.appendChild(video);
@@ -707,18 +738,24 @@ function addMediaMessage(dataUrl, mediaType, fileName, type, timestamp, msgId, s
         play.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>`;
         container.appendChild(play);
         container.addEventListener('click', () => openLightbox(dataUrl, mediaType));
+
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'media-download-btn'; dlBtn.title = 'Download';
+        dlBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+        dlBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadMedia(dataUrl, fileName || 'video.mp4'); });
+        container.appendChild(dlBtn);
     } else {
         const img = document.createElement('img');
         img.src = dataUrl; img.alt = fileName || 'Image'; img.loading = 'lazy';
         container.appendChild(img);
         container.addEventListener('click', () => openLightbox(dataUrl, mediaType));
-    }
 
-    const dlBtn = document.createElement('button');
-    dlBtn.className = 'media-download-btn'; dlBtn.title = 'Download';
-    dlBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
-    dlBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadMedia(dataUrl, fileName || (isVideo ? 'video.mp4' : 'image.png')); });
-    container.appendChild(dlBtn);
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'media-download-btn'; dlBtn.title = 'Download';
+        dlBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+        dlBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadMedia(dataUrl, fileName || 'image.png'); });
+        container.appendChild(dlBtn);
+    }
 
     bubble.appendChild(container);
     const meta = document.createElement('div');
@@ -734,7 +771,8 @@ function addMediaMessage(dataUrl, mediaType, fileName, type, timestamp, msgId, s
     replyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>`;
     replyBtn.addEventListener('click', () => {
         const sender = type === 'sent' ? State.myName : State.peerName;
-        setReply(msgId, `📎 ${isVideo ? 'Video' : 'Photo'}`, sender);
+        const tag = isPdf ? '📄 PDF Document' : (isVideo ? '📎 Video' : '📎 Photo');
+        setReply(msgId, tag, sender);
     });
     actionsGroup.appendChild(replyBtn);
 
