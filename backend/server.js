@@ -1,8 +1,8 @@
 /**
- * Realtime Chat V6 — WebSocket Server
+ * Realtime Chat V6 — WebSocket Server with MongoDB Atlas Persistence
  * 
  * Features:
- * - Permanent rooms with Disk Persistence (data/rooms.json): Rooms persist across server sleeps/restarts until host dissolves!
+ * - Permanent rooms with MongoDB Atlas Storage (Mongoose): Rooms persist permanently until host dissolves!
  * - Dual Passwords per Unique Room Username:
  *   - Host Password (Master Key for Host / Person X)
  *   - Guest Password (Normal Key for Guest / Person Y)
@@ -18,6 +18,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
+const connectDB = require('./db');
+const Room = require('./models/Room');
 
 const PORT = process.env.PORT || 3000;
 const MAX_MEDIA_SIZE = 30 * 1024 * 1024; // 30 MB
@@ -61,7 +63,7 @@ const wss = new WebSocketServer({
 });
 
 /**
- * Permanent Rooms Map:
+ * In-Memory Rooms Cache for WebSocket performance:
  * rooms = Map<roomUsername, {
  *     roomUsername: string,
  *     hostPassword: string,      // Master Key for Host (Person X)
@@ -76,62 +78,29 @@ const wss = new WebSocketServer({
  */
 const rooms = new Map();
 
-// ===== JSON Disk Persistence =====
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
-
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-function loadRoomsFromDisk() {
+// ===== Load Rooms from MongoDB into Memory Cache =====
+async function initDatabaseAndCache() {
+    await connectDB();
     try {
-        if (fs.existsSync(ROOMS_FILE)) {
-            const raw = fs.readFileSync(ROOMS_FILE, 'utf8');
-            const data = JSON.parse(raw);
-            for (const key in data) {
-                const r = data[key];
-                rooms.set(key, {
-                    roomUsername: r.roomUsername,
-                    hostPassword: r.hostPassword,
-                    guestPassword: r.guestPassword,
-                    host: null,
-                    client: null,
-                    hostName: r.hostName || 'Host',
-                    clientName: r.clientName || '',
-                    messages: r.messages || [],
-                    lastResetDate: r.lastResetDate || getTodayString()
-                });
-            }
-            console.log(`[PERSISTENCE] Loaded ${rooms.size} permanent room(s) from disk.`);
-        }
-    } catch (err) {
-        console.error('[PERSISTENCE] Error loading rooms from disk:', err.message);
-    }
-}
-
-function saveRoomsToDisk() {
-    try {
-        const obj = {};
-        for (const [key, r] of rooms.entries()) {
-            obj[key] = {
+        const dbRooms = await Room.find({});
+        for (const r of dbRooms) {
+            rooms.set(r.roomUsername, {
                 roomUsername: r.roomUsername,
                 hostPassword: r.hostPassword,
                 guestPassword: r.guestPassword,
-                hostName: r.hostName,
-                clientName: r.clientName,
-                messages: r.messages,
-                lastResetDate: r.lastResetDate
-            };
+                host: null,
+                client: null,
+                hostName: r.hostName || 'Host',
+                clientName: r.clientName || '',
+                messages: r.messages || [],
+                lastResetDate: r.lastResetDate || getTodayString()
+            });
         }
-        fs.writeFileSync(ROOMS_FILE, JSON.stringify(obj, null, 2), 'utf8');
+        console.log(`[PERSISTENCE] Loaded ${rooms.size} permanent room(s) from MongoDB Atlas.`);
     } catch (err) {
-        console.error('[PERSISTENCE] Error saving rooms to disk:', err.message);
+        console.error('[PERSISTENCE ERROR] Failed to load rooms from MongoDB:', err.message);
     }
 }
-
-// Load persisted rooms at startup
-loadRoomsFromDisk();
 
 function sendJSON(ws, data) {
     if (ws && ws.readyState === 1) {
@@ -160,7 +129,7 @@ function getTodayString() {
 }
 
 // ===== Daily 11:59 PM Reset =====
-setInterval(() => {
+setInterval(async () => {
     const now = new Date();
     const hours = now.getHours();
     const minutes = now.getMinutes();
@@ -182,7 +151,14 @@ setInterval(() => {
                 if (room.client) sendJSON(room.client, resetMsg);
             }
         }
-        if (updated) saveRoomsToDisk();
+        if (updated) {
+            try {
+                await Room.updateMany({}, { $set: { messages: [], lastResetDate: today } });
+                console.log('[RESET] Cleared messages in MongoDB Atlas for all rooms.');
+            } catch (err) {
+                console.error('[RESET ERROR] Failed to clear messages in MongoDB:', err.message);
+            }
+        }
     }
 }, 20000);
 
@@ -191,7 +167,7 @@ wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
 
-    ws.on('message', (rawData) => {
+    ws.on('message', async (rawData) => {
         let msg;
         try {
             msg = JSON.parse(rawData.toString());
@@ -230,38 +206,53 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
-                // Check uniqueness
+                // Check uniqueness in Memory & DB
                 if (rooms.has(roomUsername)) {
                     sendJSON(ws, { type: 'error', message: `Room username "@${roomUsername}" is already taken! Please choose a different unique username or use "Join Room" to enter.` });
                     return;
                 }
 
-                rooms.set(roomUsername, {
-                    roomUsername,
-                    hostPassword,
-                    guestPassword,
-                    host: ws,
-                    client: null,
-                    hostName: displayName,
-                    clientName: '',
-                    messages: [],
-                    lastResetDate: getTodayString()
-                });
+                try {
+                    const existingDBRoom = await Room.findOne({ roomUsername });
+                    if (existingDBRoom) {
+                        sendJSON(ws, { type: 'error', message: `Room username "@${roomUsername}" is already taken! Please choose a different unique username.` });
+                        return;
+                    }
 
-                saveRoomsToDisk();
+                    const newRoomDoc = {
+                        roomUsername,
+                        hostPassword,
+                        guestPassword,
+                        hostName: displayName,
+                        clientName: '',
+                        messages: [],
+                        lastResetDate: getTodayString()
+                    };
 
-                ws._roomUsername = roomUsername;
-                ws._role = 'host';
+                    await Room.create(newRoomDoc);
 
-                sendJSON(ws, {
-                    type: 'room-created',
-                    roomUsername,
-                    hostPassword,
-                    guestPassword,
-                    name: displayName,
-                    history: []
-                });
-                console.log(`[ROOM] Room @${roomUsername} created by "${displayName}" with Dual Passwords (Host: ${hostPassword}, Guest: ${guestPassword})`);
+                    rooms.set(roomUsername, {
+                        ...newRoomDoc,
+                        host: ws,
+                        client: null
+                    });
+
+                    ws._roomUsername = roomUsername;
+                    ws._role = 'host';
+
+                    sendJSON(ws, {
+                        type: 'room-created',
+                        roomUsername,
+                        hostPassword,
+                        guestPassword,
+                        name: displayName,
+                        history: []
+                    });
+                    console.log(`[ROOM] Room @${roomUsername} created by "${displayName}" in MongoDB Atlas with Dual Passwords (Host: ${hostPassword}, Guest: ${guestPassword})`);
+                } catch (err) {
+                    console.error('[ROOM CREATE ERROR]', err.message);
+                    sendJSON(ws, { type: 'error', message: 'Failed to create room in database.' });
+                }
                 break;
             }
 
@@ -292,66 +283,68 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
-                if (isHost) {
-                    // Check if host slot is currently taken
-                    if (room.host && room.host.readyState === 1) {
-                        sendJSON(ws, { type: 'error', message: `Host slot is already active in room @${roomUsername}.` });
-                        return;
+                try {
+                    if (isHost) {
+                        if (room.host && room.host.readyState === 1) {
+                            sendJSON(ws, { type: 'error', message: `Host slot is already active in room @${roomUsername}.` });
+                            return;
+                        }
+
+                        cleanupSocket(ws);
+                        room.host = ws;
+                        room.hostName = displayName;
+                        ws._roomUsername = roomUsername;
+                        ws._role = 'host';
+
+                        await Room.updateOne({ roomUsername }, { hostName: displayName });
+
+                        const clientActive = room.client && room.client.readyState === 1;
+
+                        sendJSON(ws, {
+                            type: 'room-joined',
+                            roomUsername,
+                            role: 'host',
+                            peerName: clientActive ? room.clientName : '',
+                            name: displayName,
+                            history: room.messages
+                        });
+
+                        if (clientActive) {
+                            sendJSON(room.client, { type: 'peer-joined', peerName: displayName });
+                        }
+                        console.log(`[ROOM] "${displayName}" joined @${roomUsername} as HOST (Master Key)`);
+                    } else if (isGuest) {
+                        if (room.client && room.client.readyState === 1) {
+                            sendJSON(ws, { type: 'error', message: `Guest slot is already active in room @${roomUsername}.` });
+                            return;
+                        }
+
+                        cleanupSocket(ws);
+                        room.client = ws;
+                        room.clientName = displayName;
+                        ws._roomUsername = roomUsername;
+                        ws._role = 'client';
+
+                        await Room.updateOne({ roomUsername }, { clientName: displayName });
+
+                        const hostActive = room.host && room.host.readyState === 1;
+
+                        sendJSON(ws, {
+                            type: 'room-joined',
+                            roomUsername,
+                            role: 'client',
+                            peerName: hostActive ? room.hostName : '',
+                            name: displayName,
+                            history: room.messages
+                        });
+
+                        if (hostActive) {
+                            sendJSON(room.host, { type: 'peer-joined', peerName: displayName });
+                        }
+                        console.log(`[ROOM] "${displayName}" joined @${roomUsername} as GUEST (Normal Key)`);
                     }
-
-                    cleanupSocket(ws);
-                    room.host = ws;
-                    room.hostName = displayName;
-                    ws._roomUsername = roomUsername;
-                    ws._role = 'host';
-
-                    saveRoomsToDisk();
-
-                    const clientActive = room.client && room.client.readyState === 1;
-
-                    sendJSON(ws, {
-                        type: 'room-joined',
-                        roomUsername,
-                        role: 'host',
-                        peerName: clientActive ? room.clientName : '',
-                        name: displayName,
-                        history: room.messages
-                    });
-
-                    if (clientActive) {
-                        sendJSON(room.client, { type: 'peer-joined', peerName: displayName });
-                    }
-                    console.log(`[ROOM] "${displayName}" joined @${roomUsername} as HOST (Master Key)`);
-                } else if (isGuest) {
-                    // Check if guest slot is currently taken
-                    if (room.client && room.client.readyState === 1) {
-                        sendJSON(ws, { type: 'error', message: `Guest slot is already active in room @${roomUsername}.` });
-                        return;
-                    }
-
-                    cleanupSocket(ws);
-                    room.client = ws;
-                    room.clientName = displayName;
-                    ws._roomUsername = roomUsername;
-                    ws._role = 'client';
-
-                    saveRoomsToDisk();
-
-                    const hostActive = room.host && room.host.readyState === 1;
-
-                    sendJSON(ws, {
-                        type: 'room-joined',
-                        roomUsername,
-                        role: 'client',
-                        peerName: hostActive ? room.hostName : '',
-                        name: displayName,
-                        history: room.messages
-                    });
-
-                    if (hostActive) {
-                        sendJSON(room.host, { type: 'peer-joined', peerName: displayName });
-                    }
-                    console.log(`[ROOM] "${displayName}" joined @${roomUsername} as GUEST (Normal Key)`);
+                } catch (err) {
+                    console.error('[ROOM JOIN ERROR]', err.message);
                 }
                 break;
             }
@@ -360,7 +353,7 @@ wss.on('connection', (ws) => {
             case 'chat-message': {
                 const result = findRoomBySocket(ws);
                 if (!result) { sendJSON(ws, { type: 'error', message: 'Not in a room.' }); return; }
-                const { room } = result;
+                const { roomUsername, room } = result;
                 const peer = getPeer(ws, room);
                 const text = (msg.text || '').trim();
                 if (!text || text.length > 2000) return;
@@ -371,8 +364,14 @@ wss.on('connection', (ws) => {
                 const msgId = 'm_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
                 const replyTo = msg.replyTo || null;
 
-                room.messages.push({ msgId, type: 'text', text, senderRole, senderName, timestamp, replyTo, edited: false });
-                saveRoomsToDisk();
+                const msgObj = { msgId, type: 'text', text, senderRole, senderName, timestamp, replyTo, edited: false };
+                room.messages.push(msgObj);
+
+                try {
+                    await Room.updateOne({ roomUsername }, { $push: { messages: msgObj } });
+                } catch (err) {
+                    console.error('[DB MESSAGE ERROR]', err.message);
+                }
 
                 if (peer) sendJSON(peer, { type: 'chat-message', text, senderRole, senderName, timestamp, msgId, replyTo });
                 sendJSON(ws, { type: 'message-sent', text, senderRole, timestamp, msgId, replyTo });
@@ -383,14 +382,22 @@ wss.on('connection', (ws) => {
             case 'edit-message': {
                 const result = findRoomBySocket(ws);
                 if (!result) return;
-                const { room } = result;
+                const { roomUsername, room } = result;
                 const peer = getPeer(ws, room);
                 const { msgId, newText } = msg;
                 if (!msgId || !newText || newText.trim().length === 0) return;
 
                 const trimmed = newText.trim();
                 const msgObj = room.messages.find(m => m.msgId === msgId);
-                if (msgObj) { msgObj.text = trimmed; msgObj.edited = true; saveRoomsToDisk(); }
+                if (msgObj) {
+                    msgObj.text = trimmed;
+                    msgObj.edited = true;
+                    try {
+                        await Room.updateOne({ roomUsername, 'messages.msgId': msgId }, { $set: { 'messages.$.text': trimmed, 'messages.$.edited': true } });
+                    } catch (err) {
+                        console.error('[DB EDIT ERROR]', err.message);
+                    }
+                }
 
                 const editPayload = { type: 'message-edited', msgId, newText: trimmed };
                 sendJSON(ws, editPayload);
@@ -402,13 +409,20 @@ wss.on('connection', (ws) => {
             case 'delete-message': {
                 const result = findRoomBySocket(ws);
                 if (!result) return;
-                const { room } = result;
+                const { roomUsername, room } = result;
                 const peer = getPeer(ws, room);
                 const { msgId } = msg;
                 if (!msgId) return;
 
                 const idx = room.messages.findIndex(m => m.msgId === msgId);
-                if (idx !== -1) { room.messages.splice(idx, 1); saveRoomsToDisk(); }
+                if (idx !== -1) {
+                    room.messages.splice(idx, 1);
+                    try {
+                        await Room.updateOne({ roomUsername }, { $pull: { messages: { msgId } } });
+                    } catch (err) {
+                        console.error('[DB DELETE ERROR]', err.message);
+                    }
+                }
 
                 const deletePayload = { type: 'message-deleted', msgId };
                 sendJSON(ws, deletePayload);
@@ -420,7 +434,7 @@ wss.on('connection', (ws) => {
             case 'media-message': {
                 const result = findRoomBySocket(ws);
                 if (!result) return;
-                const { room } = result;
+                const { roomUsername, room } = result;
                 const peer = getPeer(ws, room);
                 const { data: mediaData, mediaType, fileName, fileSize } = msg;
                 if (!mediaData || !mediaType) return;
@@ -440,8 +454,14 @@ wss.on('connection', (ws) => {
                 const timestamp = new Date().toISOString();
                 const msgId = 'm_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
 
-                room.messages.push({ msgId, type: 'media', data: mediaData, mediaType, fileName, senderRole, senderName, timestamp });
-                saveRoomsToDisk();
+                const msgObj = { msgId, type: 'media', data: mediaData, mediaType, fileName, fileSize, senderRole, senderName, timestamp };
+                room.messages.push(msgObj);
+
+                try {
+                    await Room.updateOne({ roomUsername }, { $push: { messages: msgObj } });
+                } catch (err) {
+                    console.error('[DB MEDIA ERROR]', err.message);
+                }
 
                 if (peer) sendJSON(peer, { type: 'media-message', data: mediaData, mediaType, fileName, senderRole, senderName, timestamp, msgId });
                 sendJSON(ws, { type: 'media-sent', data: mediaData, mediaType, fileName, senderRole, timestamp, msgId });
@@ -485,9 +505,13 @@ wss.on('connection', (ws) => {
                 const peer = getPeer(ws, room);
                 if (peer) sendJSON(peer, { type: 'room-dissolved', message: 'The room was permanently dissolved.' });
                 rooms.delete(roomUsername);
-                saveRoomsToDisk();
+                try {
+                    await Room.deleteOne({ roomUsername });
+                    console.log(`[ROOM] @${roomUsername} dissolved in MongoDB Atlas.`);
+                } catch (err) {
+                    console.error('[DB DISSOLVE ERROR]', err.message);
+                }
                 sendJSON(ws, { type: 'room-dissolved', message: 'You dissolved the room.' });
-                console.log(`[ROOM] @${roomUsername} dissolved`);
                 break;
             }
 
@@ -545,17 +569,22 @@ const heartbeatInterval = setInterval(() => {
 }, 30000);
 wss.on('close', () => clearInterval(heartbeatInterval));
 
-httpServer.listen(PORT, () => {
-    console.log('');
-    console.log('  ╔═══════════════════════════════════════════════╗');
-    console.log('  ║      🚀 Realtime Chat V6 Server               ║');
-    console.log('  ╠═══════════════════════════════════════════════╣');
-    console.log(`  ║  Local:       http://localhost:${PORT}            ║`);
-    console.log('  ║  Auth:        Dual Passwords (Host & Guest)   ║');
-    console.log('  ║  Capacity:    Max 1 Host + 1 Guest (2 Total)  ║');
-    console.log('  ║  Persistence: JSON Disk Storage (data/rooms)  ║');
-    console.log('  ║  Media Limit: 30 MB (Photos, Videos, PDFs)   ║');
-    console.log('  ║  Reset:       Automatic 11:59 PM Daily Reset  ║');
-    console.log('  ╚═══════════════════════════════════════════════╝');
-    console.log('');
+// ===== Connect DB & Start HTTP Server =====
+initDatabaseAndCache().then(() => {
+    httpServer.listen(PORT, () => {
+        console.log('');
+        console.log('  ╔═══════════════════════════════════════════════╗');
+        console.log('  ║      🚀 Realtime Chat V6 Server               ║');
+        console.log('  ╠═══════════════════════════════════════════════╣');
+        console.log(`  ║  Local:       http://localhost:${PORT}            ║`);
+        console.log('  ║  Auth:        Dual Passwords (Host & Guest)   ║');
+        console.log('  ║  Capacity:    Max 1 Host + 1 Guest (2 Total)  ║');
+        console.log('  ║  Database:    MongoDB Atlas (Mongoose)        ║');
+        console.log('  ║  Media Limit: 30 MB (Photos, Videos, PDFs)   ║');
+        console.log('  ║  Reset:       Automatic 11:59 PM Daily Reset  ║');
+        console.log('  ╚═══════════════════════════════════════════════╝');
+        console.log('');
+    });
+}).catch(err => {
+    console.error('Failed to initialize server:', err.message);
 });
