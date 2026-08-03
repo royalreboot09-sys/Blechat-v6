@@ -13,10 +13,19 @@
  * - Media & PDF sharing up to 30 MB
  * - WhatsApp-style replies, Chat download consent, RAR Library reader
  */
-
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
+
+const envPath = path.join(__dirname, '.env');
+
+require('dotenv').config({ path: envPath });
+
+console.log("Current directory:", __dirname);
+console.log("Env path:", envPath);
+console.log("Env exists:", fs.existsSync(envPath));
+console.log("Loaded MONGO_URI:", process.env.MONGO_URI);
+
+const http = require('http');
 const { WebSocketServer } = require('ws');
 const connectDB = require('./db');
 const Room = require('./models/Room');
